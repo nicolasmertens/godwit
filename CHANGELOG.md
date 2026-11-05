@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.26.3](https://github.com/godwit-email/godwit/compare/v1.26.2...v1.26.3) (2026-11-05)
+
+
+### Bug Fixes
+
+* **app:** open the bug report form from the report link, and add issue forms ([#474](https://github.com/godwit-email/godwit/issues/474)) ([4d91220](https://github.com/godwit-email/godwit/commit/4d9122007665bad5dcf96da47d04b1ef79615cd0))
+
 ## [1.26.2](https://github.com/godwit-email/godwit/compare/v1.26.1...v1.26.2) (2026-11-04)
 
 
