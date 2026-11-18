@@ -120,6 +120,11 @@ type msgBody struct {
 	// (BodyImagesFailed); a retry reloads the body.
 	imgFailed int
 
+	// staged is each attachment's copy under its own name (by attachment ID),
+	// made as soon as the message shows so a drag can hand Finder a real file.
+	staged  map[int64]string
+	started map[int64]bool // attachments whose copy was begun
+
 	unsub     core.Unsubscribe // how it unsubscribes, by its headers; none until asked
 	unsubbing bool             // its unsubscribe is under way
 
@@ -343,7 +348,61 @@ func (r *reader) loadBody(id int64) {
 		r.openView(id)
 		r.loadAvatar(id, b.avatarAllow)
 		r.loadUnsubscribe(id)
+		r.stageAttachments(id, b)
 	})
+}
+
+// maxStagedBytes is the largest attachment copied ahead for dragging. A
+// bigger one is still opened and saved, just not draggable.
+const maxStagedBytes = 256 << 20
+
+// stageAttachments downloads message id's attachments (the cache fetches
+// them from the server) and copies each, under its own name, into a
+// directory Close removes. A chip is draggable once its copy exists: the
+// drag must offer a file the moment it starts, so it cannot wait for the
+// download.
+func (r *reader) stageAttachments(id int64, b *msgBody) {
+	a, gen := r.p.a, r.gen
+	for _, att := range b.msg.Attachments {
+		if att.Inline || b.started[att.ID] || att.Size > maxStagedBytes {
+			continue
+		}
+		if b.started == nil {
+			b.started = map[int64]bool{}
+		}
+		b.started[att.ID] = true
+		a.do(func(ctx context.Context) error {
+			path, err := a.stageAttachment(ctx, att)
+			if err != nil {
+				return err
+			}
+			a.onUI(func() {
+				if gen != r.gen || r.bodies[id] != b {
+					return
+				}
+				if b.staged == nil {
+					b.staged = map[int64]string{}
+				}
+				b.staged[att.ID] = path
+			})
+			return nil
+		}, nil) // best effort: without a copy the chip still opens and saves
+	}
+}
+
+// stageAttachment copies the attachment, under its own name, to a new
+// directory in the platform's temporary one and returns its path.
+func (a *App) stageAttachment(ctx context.Context, att core.AttachmentInfo) (string, error) {
+	src, _, err := a.svc.GetAttachment(ctx, att.ID)
+	if err != nil {
+		return "", err
+	}
+	dir, err := a.tempDir(a.plat.TempDir())
+	if err != nil {
+		return "", err
+	}
+	dst := filepath.Join(dir, core.FileName(att.Filename, "attachment"))
+	return dst, copyFile(src, dst)
 }
 
 // loadUnsubscribe asks how message id unsubscribes after its body shows:
@@ -1430,7 +1489,7 @@ func (r *reader) message(c *ui.Context, m core.MessageSummary) {
 						OnClick(func() { r.viewInBrowser(m.ID) })
 				})
 			}
-			r.attachments(c, b.msg.Attachments)
+			r.attachments(c, b.msg.Attachments, b.staged)
 		})
 	})
 }
@@ -1487,14 +1546,20 @@ func (r *reader) column(c *ui.Context) ui.Element {
 }
 
 // attachments lists the files attached: a click opens one, Save as copies it.
-func (r *reader) attachments(c *ui.Context, atts []core.AttachmentInfo) {
+func (r *reader) attachments(c *ui.Context, atts []core.AttachmentInfo, staged map[int64]string) {
 	t, th := theme.Of(c), c.Theme()
 	ui.Row(c).Wrap().Gap(th.Space(2)).Children(func() {
 		for _, att := range atts {
 			if att.Inline {
 				continue
 			}
-			ui.Row(c).Width(theme.AttachmentWidth).Gap(th.Space(1)).Padding(th.Space(2), th.Space(2.5)).Border(theme.Hairline, t.Border).Radius(t.Radius.Lg).Children(func() {
+			chip := ui.Row(c).Width(theme.AttachmentWidth).Gap(th.Space(1)).Padding(th.Space(2), th.Space(2.5)).Border(theme.Hairline, t.Border).Radius(t.Radius.Lg)
+			if path, ok := staged[att.ID]; ok {
+				if data, err := transfer.FileData(path); err == nil {
+					chip.DragData(data, transfer.DragOptions{Operations: transfer.Copy})
+				}
+			}
+			chip.Children(func() {
 				kit.Pressable(c, kit.PressableOpts{OnClick: func() { r.p.a.openAttachment(att) }}).Grow(1).Shrink(1).Gap(th.Space(2.5)).Children(func() {
 					if img := r.p.a.typeIcon(iconExt(att.Filename)); img != nil {
 						ui.Image(c, img).Size(th.Space(8.5), th.Space(8.5)).Fit(ui.Contain).Shrink(0)
